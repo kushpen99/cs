@@ -231,7 +231,7 @@
 			<span class="material-icons">content_copy</span>
 			<span>Copy code</span>
 		</button>
-		<button id="btn-append-doc" type="button" style="display:none" disabled>
+		<button id="btn-append-doc" type="button" disabled>
 		  <span class="material-icons">description</span>
 		  <span>Append to Google Doc</span>
 		</button>
@@ -472,8 +472,7 @@
           });
           outputEl.value = md;
           btnCopy.style.display = "inline-flex"; //  show copy button
-		  btnAppendDoc.style.display = "inline-flex";
-
+		  
           /*  html preview  */
           previewEl.innerHTML = "";
           results.forEach((file) => {
@@ -522,7 +521,6 @@
       outputEl.value = "";
       previewEl.innerHTML = "";
       btnCopy.style.display = "none"; //  hide copy button
-	  btnAppendDoc.display = "none";
     });
   </script>
 </body>
