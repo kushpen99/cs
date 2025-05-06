@@ -470,6 +470,7 @@ async function appendFilesToGoogleDoc() {
       /* אם קרובים למגבלת 100 – שלח וחישוב endIndex מחדש */
       if (requests.length >= ROOM) {
         try {
+			console.log("calling batch 1");
 		  await sendBatch(docId, requests);
 		} catch (e) {
 		  console.error('Docs API error:', e.result.error.message);
@@ -487,6 +488,8 @@ async function appendFilesToGoogleDoc() {
 
     if (requests.length >= ROOM) {
       try {
+			console.log("calling batch 2");
+
 		  await sendBatch(docId, requests);
 		} catch (e) {
 		  console.error('Docs API error:', e.result.error.message);
