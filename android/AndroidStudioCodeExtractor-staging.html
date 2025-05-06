@@ -341,73 +341,90 @@
 	  return m ? m[0] : null;
 	}
 	
-	async function appendFilesToGoogleDoc() {
-	  if (!extractedFiles?.length) {
-		alert('No files loaded to append.');
-		return;
+	/* מחזיר Promise למערך [{ name, code }] */
+	async function collectFilesForAppend() {
+	  const entries = updateFileList();            // מהפונקציה שלך
+	  if (!entries.length) {
+		alert('No files to append – load a project first.');
+		return null;
 	  }
 
-	  /* ――― 1. ודא שיש טוקן ――― */
+	  /* File.text() מחזיר Promise עם הטקסט המלא של הקובץ */
+	  const files = await Promise.all(
+		entries.map(async ({ path, file }) => ({
+		  name: path,              // שם / נתיב הקובץ
+		  code: await file.text(), // תוכן הקובץ כטקסט
+		}))
+	  );
+
+	  return files;
+	}
+
+	async function appendFilesToGoogleDoc() {
+	  const fileBlobs = await collectFilesForAppend();
+	  if (!fileBlobs) return;                      // אין קבצים
+
+	  /* ---- OAuth token ---- */
 	  if (!gapi.client.getToken()) tokenClient.requestAccessToken({ prompt: '' });
 
-	  /* ――― 2. שאל לאיזה Doc להוסיף / צור חדש ――― */
+	  /* ---- בחר / צור מסמך ---- */
 	  let docId = parseDocId(prompt('Docs URL/ID (blank = create new)') || '');
 	  if (!docId) {
 		const res = await gapi.client.drive.files.create({
 		  resource: {
 			mimeType: 'application/vnd.google-apps.document',
-			name: 'Android Studio Code Dump'
+			name: 'Android Studio Code Dump',
 		  },
-		  fields: 'id'
+		  fields: 'id',
 		});
 		docId = res.result.id;
 	  }
 
-	  /* ――― 3. הבא את המסמך כדי לדעת את ה‑endIndex הנוכחי ――― */
+	  /* ---- הבא את endIndex הנוכחי ---- */
 	  const doc = await gapi.client.docs.documents.get({ documentId: docId });
 	  let endIndex = doc.result.body.content.at(-1)?.endIndex || 1;
 
 	  const requests = [];
 
-	  /* ――― 4. בנה בקשה עבור כל קובץ ――― */
-	  extractedFiles.forEach(({ name, code }) => {
-		/* (a) כותרת H2 */
+	  fileBlobs.forEach(({ name, code }) => {
+		/* כותרת H2 */
 		requests.push({
 		  insertText: {
 			location: { index: endIndex },
-			text: name + '\n'        // כותרת והשורה הבאה
-		  }
+			text: name + '\n',
+		  },
 		});
 		requests.push({
 		  updateParagraphStyle: {
 			range: { startIndex: endIndex, endIndex: endIndex + name.length },
 			paragraphStyle: { namedStyleType: 'HEADING_2' },
-			fields: 'namedStyleType'
-		  }
+			fields: 'namedStyleType',
+		  },
 		});
-		endIndex += name.length + 1;  // +1 עבור ה‑newline
+		endIndex += name.length + 1;
 
-		/* (b) בלוק‑קוד משולש‑גרשיים */
+		/* בלוק‑קוד */
 		const block = '```java\n' + code + '\n```\n';
 		requests.push({
 		  insertText: {
 			location: { index: endIndex },
-			text: block
-		  }
+			text: block,
+		  },
 		});
 		endIndex += block.length;
 	  });
 
-	  /* ――― 5. הרץ batchUpdate ――― */
+	  /* ---- שלח ל‑Docs ---- */
 	  await gapi.client.docs.documents.batchUpdate({
 		documentId: docId,
-		resource: { requests }
+		resource: { requests },
 	  });
 
 	  window.open(`https://docs.google.com/document/d/${docId}/edit`, '_blank');
-	  alert('All files appended!');
+	  alert('Files appended!');
 	}
 
+	
 	/* --- main: append textarea content --- */
 	async function appendToGoogleDoc() {
 	  const code = document.getElementById('output').value;
