@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Android Studio Code Extractor</title>
 
+	<!-- Google API client -->
+	<script src="https://apis.google.com/js/api.js"></script>
+
+	<!-- Google Identity Services (OAuth2) -->
+	<script src="https://accounts.google.com/gsi/client" async defer></script>
 
   <!--  Google Fonts  -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -226,6 +231,11 @@
 			<span class="material-icons">content_copy</span>
 			<span>Copy code</span>
 		</button>
+		<button id="btn-append-doc" type="button" style="display:none" disabled>
+		  <span class="material-icons">description</span>
+		  <span>Append to Google Doc</span>
+		</button>
+
 	</div>
 	<textarea
 	  id="output"
@@ -247,6 +257,7 @@
     const btnSelectFiles = document.getElementById("btn-select-files");
     const btnClear = document.getElementById("btn-clear");
     const btnCopy = document.getElementById("btn-copy");
+	const btnAppendDoc = document.getElementById("btn-append-doc");
 
     const includeSubdirsCheckbox = document.getElementById("include-subdirs");
     const fileListEl = document.getElementById("file-list");
@@ -270,6 +281,107 @@
     });
 
     includeSubdirsCheckbox.addEventListener("change", updateFileList);
+	
+	document.getElementById('btn-append-doc')
+        .addEventListener('click', appendToGoogleDoc);
+
+	
+	/* ‑‑‑ keys from Google Cloud console ‑‑‑ */
+	const CLIENT_ID = '828705375882-o7ojpl7jh5qtq8hseqitpmv0u2626q9k.apps.googleusercontent.com';
+	const API_KEY   = 'AIzaSyC_j3jhtG8unLvnf3OjG_i1WWxRa6eCYEU';
+
+	/* Docs & Drive scopes */
+	const SCOPES = [
+	  'https://www.googleapis.com/auth/documents',   // write existing docs
+	  'https://www.googleapis.com/auth/drive.file'   // create files you own
+	].join(' ');
+
+	let tokenClient, gapiInited = false, gisInited = false;
+
+	/* -------- gapi loader -------- */
+	function gapiLoaded() {
+	  gapi.load('client', async () => {
+		await gapi.client.init({
+		  apiKey: API_KEY,
+		  discoveryDocs: ['https://docs.googleapis.com/$discovery/rest?version=v1']
+		});
+		gapiInited = true;
+		maybeEnableAppend();
+	  });
+	}
+
+	/* -------- GIS loader -------- */
+	function gisLoaded() {
+	  tokenClient = google.accounts.oauth2.initTokenClient({
+		client_id: CLIENT_ID,
+		scope: SCOPES,
+		callback: (t) => {
+		  gapi.client.setToken(t);          // attach access token to gapi
+		  maybeEnableAppend();
+		}
+	  });
+	  gisInited = true;
+	}
+
+	function maybeEnableAppend() {
+	  if (gapiInited && gisInited) {
+		document.getElementById('btn-append-doc').disabled = false;
+	  }
+	}
+
+	/* Trigger on page load */
+	window.addEventListener('load', () => {
+	  gapiLoaded();
+	  gisLoaded();
+	});
+
+	/* --- tiny helper: extract docId if user pastes full URL --- */
+	function parseDocId(input) {
+	  const m = input.trim().match(/[-\w]{25,}/);
+	  return m ? m[0] : null;
+	}
+
+	/* --- main: append textarea content --- */
+	async function appendToGoogleDoc() {
+	  const code = document.getElementById('output').value;
+	  if (!code.trim()) return alert('No code to append.');
+
+	  /* ask for / refresh token if needed */
+	  if (!gapi.client.getToken()) tokenClient.requestAccessToken();
+
+	  const docInput = prompt(
+		'Google Docs URL or ID.\nLeave blank to create a new document.'
+	  );
+
+	  let docId = parseDocId(docInput || '');
+	  if (!docId) {
+		/* create a fresh doc via Drive */
+		const res = await gapi.client.drive.files.create({
+		  resource: {mimeType: 'application/vnd.google-apps.document', name: 'Extracted Code'},
+		  fields: 'id'
+		});
+		docId = res.result.id;
+		alert('Created new Doc: ' + docId);
+	  }
+
+	  /* build batchUpdate body */
+	  const requests = [
+		{
+		  insertText: {
+			text: '\n```java\n' + code + '\n```\n',
+			endOfSegmentLocation: {}        // <- “append” magic
+		  }
+		}
+	  ];
+
+	  await gapi.client.docs.documents.batchUpdate({
+		documentId: docId,
+		resource: { requests }
+	  });
+
+	  window.open(`https://docs.google.com/document/d/${docId}/edit`, '_blank');
+	  alert('Code appended!');
+	}
 
     /*  ── list management ──  */
     function updateFileList() {
@@ -360,6 +472,7 @@
           });
           outputEl.value = md;
           btnCopy.style.display = "inline-flex"; //  show copy button
+		  btnAppendDoc.style.display = "inline-flex";
 
           /*  html preview  */
           previewEl.innerHTML = "";
@@ -409,6 +522,7 @@
       outputEl.value = "";
       previewEl.innerHTML = "";
       btnCopy.style.display = "none"; //  hide copy button
+	  btnAppendDoc.display = "none";
     });
   </script>
 </body>
