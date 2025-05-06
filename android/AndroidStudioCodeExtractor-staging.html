@@ -370,11 +370,7 @@
 	  return files;
 	}
 	
-	/* helper – תמציתי: חילוץ מזהה מתוך URL או ID גולמי */
-function parseDocId(input) {
-  const m = (input || '').trim().match(/[-\w]{25,}/);
-  return m ? m[0] : null;
-}
+
 
 /* helper – safe end‑of‑doc insertion point */
 async function getEndIndex(docId) {
