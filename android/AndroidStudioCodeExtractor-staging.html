@@ -469,7 +469,12 @@ async function appendFilesToGoogleDoc() {
 
       /* אם קרובים למגבלת 100 – שלח וחישוב endIndex מחדש */
       if (requests.length >= ROOM) {
-        await sendBatch(docId, requests);
+        try {
+		  await sendBatch(docId, requests);
+		} catch (e) {
+		  console.error('Docs API error:', e.result.error.message);
+		  throw e;                        // מעביר הלאה אם תרצה לעצור
+		}
         endIndex = await getEndIndex(docId);
       }
     }
@@ -481,7 +486,12 @@ async function appendFilesToGoogleDoc() {
     endIndex += 4;
 
     if (requests.length >= ROOM) {
-      await sendBatch(docId, requests);
+      try {
+		  await sendBatch(docId, requests);
+		} catch (e) {
+		  console.error('Docs API error:', e.result.error.message);
+		  throw e;                        // מעביר הלאה אם תרצה לעצור
+		}
       endIndex = await getEndIndex(docId);
     }
   }
