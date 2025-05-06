@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Android Studio Code Extractor</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 1em; max-width: 800px; margin: auto; }
+    h1 { text-align: center; }
+    #drop-zone { border: 2px dashed #ccc; padding: 2em; text-align: center; color: #666; cursor: pointer; }
+    #drop-zone.dragover { background: #f0f0f0; }
+    #file-list { max-height: 200px; overflow-y: auto; margin: 0.5em 0; padding-left: 1em; font-family: monospace; background: #f1f1f1; border: 1px solid #ccc; }
+    #preview { margin-top: 1em; }
+    #preview h2 { border-bottom: 1px solid #ccc; margin-top: 1em; font-size: 1.1em; }
+    #preview pre { background: #f8f8f8; padding: 0.5em; overflow-x: auto; white-space: pre-wrap; }
+    textarea { width: 100%; height: 60vh; margin-top: 1em; font-family: monospace; }
+    button { padding: 0.5em 1em; font-size: 1em; margin-top: 0.5em; }
+    label { display: block; margin-top: 0.5em; }
+  </style>
+</head>
+<body>
+  <h1>Project Markdown Generator</h1>
+  <div id="drop-zone">Drag & drop folders here or click to select</div>
+  <input type="file" id="file-input" webkitdirectory directory multiple accept=".java,.xml" style="display:none" />
+  <label><input type="checkbox" id="include-subdirs" checked /> Include subdirectories</label>
+  <p>Supported files to process (*.java, *.xml):</p>
+  <ul id="file-list"></ul>
+  <button id="generate">Generate Markdown</button>
+  <textarea id="output" placeholder="Your markdown will appear here..." readonly></textarea>
+  <div id="preview"></div>
+
+  <script>
+    console.log('Markdown Generator initialized');
+    let allFiles = [];
+
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+    const includeSubdirsCheckbox = document.getElementById('include-subdirs');
+    const fileListEl = document.getElementById('file-list');
+    const outputEl = document.getElementById('output');
+    const previewEl = document.getElementById('preview');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', e => { dropZone.classList.remove('dragover'); });
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      const files = Array.from(e.dataTransfer.files);
+      allFiles = files;
+      updateFileList();
+    });
+    fileInput.addEventListener('change', e => {
+      allFiles = Array.from(fileInput.files);
+      updateFileList();
+    });
+    includeSubdirsCheckbox.addEventListener('change', updateFileList);
+
+    function updateFileList() {
+      const includeSubdirs = includeSubdirsCheckbox.checked;
+      const allowedExts = ['.java', '.xml'];
+      const entries = allFiles.filter(f => {
+        const path = f.webkitRelativePath || f.name;
+        const ext = path.slice(path.lastIndexOf('.')).toLowerCase();
+        if (!allowedExts.includes(ext)) return false;
+        if (!includeSubdirs && path.includes('/')) return false;
+        return true;
+      }).map(f => ({ file: f, path: f.webkitRelativePath || f.name }));
+
+      // Deduplicate & sort
+      const map = new Map();
+      entries.forEach(e => map.set(e.path, e.file));
+      const unique = Array.from(map.entries()).map(([path, file]) => ({ path, file }));
+      unique.sort((a, b) => a.path.localeCompare(b.path));
+
+      // Display
+      fileListEl.innerHTML = '';
+      unique.forEach(e => {
+        const li = document.createElement('li');
+        li.textContent = e.path;
+        fileListEl.appendChild(li);
+      });
+
+      return unique;
+    }
+
+    function extToLang(ext) {
+      const map = { '.java':'java', '.xml':'xml' };
+      return map[ext.toLowerCase()] || '';
+    }
+
+    function makeSeparator(path, isXml) {
+      if (isXml) {
+        return `<!-- ─────────────────────────────────────────── -->\n` +
+               `<!-- File: ${path} -->\n` +
+               `<!-- ─────────────────────────────────────────── -->\n`;
+      } else {
+        return `// ─────────────────────────────────────────── \n` +
+               `// File: ${path}\n` +
+               `// ─────────────────────────────────────────── \n`;
+      }
+    }
+
+    document.getElementById('generate').addEventListener('click', () => {
+      const entries = updateFileList();
+      if (!entries.length) { alert('No supported files to process.'); return; }
+
+      Promise.all(entries.map(e => new Promise(resolve => {
+        const reader = new FileReader();
+        reader.onload = () => resolve({ path: e.path, content: reader.result });
+        reader.onerror = () => resolve({ path: e.path, content: '' });
+        reader.readAsText(e.file);
+      }))).then(results => {
+        let md = '# Project Source Code\n\n';
+        results.forEach(file => {
+          const isXml = file.path.toLowerCase().endsWith('.xml');
+          const sep = makeSeparator(file.path, isXml);
+          const ext = file.path.slice(file.path.lastIndexOf('.')).toLowerCase();
+          const lang = extToLang(ext);
+          md += `## ${file.path}\n`;
+          md += lang ? `\`\`\`${lang}\n` : '```\n';
+          md += sep + file.content.replace(/```/g, '\`\`\`') + '\n';
+          md += '```\n\n';
+        });
+        outputEl.value = md;
+
+        previewEl.innerHTML = '';
+        results.forEach(file => {
+          const isXml = file.path.toLowerCase().endsWith('.xml');
+          const sep = makeSeparator(file.path, isXml);
+          const section = document.createElement('div');
+          const h2 = document.createElement('h2'); h2.textContent = file.path;
+          const pre = document.createElement('pre');
+          const codeEl = document.createElement('code');
+          codeEl.textContent = sep + file.content;
+          pre.appendChild(codeEl);
+          section.appendChild(h2);
+          section.appendChild(pre);
+          previewEl.appendChild(section);
+        });
+      }).catch(err => {
+        console.error('Error:', err);
+        alert('An error occurred. Check console.');
+      });
+    });
+  </script>
+</body>
+</html>
