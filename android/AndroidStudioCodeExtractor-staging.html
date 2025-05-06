@@ -376,11 +376,14 @@ function parseDocId(input) {
   return m ? m[0] : null;
 }
 
-/* helper – מביא את endIndex הנוכחי של המסמך */
+/* helper – safe end‑of‑doc insertion point */
 async function getEndIndex(docId) {
   const doc = await gapi.client.docs.documents.get({ documentId: docId });
-  return doc.result.body.content.at(-1)?.endIndex || 1;
+  const idx = doc.result.body.content.at(-1)?.endIndex || 1;
+  /* Google allows 1‑based indices up to len, not len+1 (sentinel) */
+  return Math.max(1, idx - 1);
 }
+
 
 /* helper – שולח בקשות בחבילות של ≤100 */
 async function sendBatch(docId, queue) {
