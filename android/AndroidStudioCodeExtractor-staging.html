@@ -500,7 +500,10 @@ async function appendFilesToGoogleDoc() {
   }
 
   /* 6. שלח את השאריות */
-  if (requests.length) await sendBatch(docId, requests);
+  if (requests.length) {
+	console.log("calling batch 3");
+	await sendBatch(docId, requests);
+  }
 
   /* 7. פתח את המסמך בכרטיסייה חדשה */
   window.open(`https://docs.google.com/document/d/${docId}/edit`, '_blank');
