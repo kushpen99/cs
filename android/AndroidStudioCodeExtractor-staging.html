@@ -283,7 +283,7 @@
     includeSubdirsCheckbox.addEventListener("change", updateFileList);
 	
 	document.getElementById('btn-append-doc')
-        .addEventListener('click', appendToGoogleDoc);
+        .addEventListener('click', appendFilesToGoogleDoc);
 
 	
 	/* ‑‑‑ keys from Google Cloud console ‑‑‑ */
@@ -339,6 +339,73 @@
 	function parseDocId(input) {
 	  const m = input.trim().match(/[-\w]{25,}/);
 	  return m ? m[0] : null;
+	}
+	
+	async function appendFilesToGoogleDoc() {
+	  if (!extractedFiles?.length) {
+		alert('No files loaded to append.');
+		return;
+	  }
+
+	  /* ――― 1. ודא שיש טוקן ――― */
+	  if (!gapi.client.getToken()) tokenClient.requestAccessToken({ prompt: '' });
+
+	  /* ――― 2. שאל לאיזה Doc להוסיף / צור חדש ――― */
+	  let docId = parseDocId(prompt('Docs URL/ID (blank = create new)') || '');
+	  if (!docId) {
+		const res = await gapi.client.drive.files.create({
+		  resource: {
+			mimeType: 'application/vnd.google-apps.document',
+			name: 'Android Studio Code Dump'
+		  },
+		  fields: 'id'
+		});
+		docId = res.result.id;
+	  }
+
+	  /* ――― 3. הבא את המסמך כדי לדעת את ה‑endIndex הנוכחי ――― */
+	  const doc = await gapi.client.docs.documents.get({ documentId: docId });
+	  let endIndex = doc.result.body.content.at(-1)?.endIndex || 1;
+
+	  const requests = [];
+
+	  /* ――― 4. בנה בקשה עבור כל קובץ ――― */
+	  extractedFiles.forEach(({ name, code }) => {
+		/* (a) כותרת H2 */
+		requests.push({
+		  insertText: {
+			location: { index: endIndex },
+			text: name + '\n'        // כותרת והשורה הבאה
+		  }
+		});
+		requests.push({
+		  updateParagraphStyle: {
+			range: { startIndex: endIndex, endIndex: endIndex + name.length },
+			paragraphStyle: { namedStyleType: 'HEADING_2' },
+			fields: 'namedStyleType'
+		  }
+		});
+		endIndex += name.length + 1;  // +1 עבור ה‑newline
+
+		/* (b) בלוק‑קוד משולש‑גרשיים */
+		const block = '```java\n' + code + '\n```\n';
+		requests.push({
+		  insertText: {
+			location: { index: endIndex },
+			text: block
+		  }
+		});
+		endIndex += block.length;
+	  });
+
+	  /* ――― 5. הרץ batchUpdate ――― */
+	  await gapi.client.docs.documents.batchUpdate({
+		documentId: docId,
+		resource: { requests }
+	  });
+
+	  window.open(`https://docs.google.com/document/d/${docId}/edit`, '_blank');
+	  alert('All files appended!');
 	}
 
 	/* --- main: append textarea content --- */
