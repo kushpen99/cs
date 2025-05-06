@@ -235,6 +235,19 @@
 		  <span class="material-icons">description</span>
 		  <span>Append to Google Doc</span>
 		</button>
+		
+		<!-- 1. minimal modal -->
+		<dialog id="doc-picker">
+		  <form method="dialog" id="doc-form">
+			<label>Docs URL or ID:<br>
+			  <input type="text" id="doc-input" style="width:100%" />
+			</label>
+			<menu>
+			  <button value="cancel">Cancel</button>
+			  <button id="doc-ok" value="default">OK</button>
+			</menu>
+		  </form>
+		</dialog>
 
 	</div>
 	<textarea
@@ -263,6 +276,8 @@
     const fileListEl = document.getElementById("file-list");
     const outputEl = document.getElementById("output");
     const previewEl = document.getElementById("preview");
+	const picker = document.getElementById('doc-picker');
+	const input  = document.getElementById('doc-input');
 
     /*  ── file picking ──  */
     btnSelectFolder.addEventListener("click", () => folderInput.click());
@@ -366,9 +381,14 @@
 
 	  /* ---- OAuth token ---- */
 	  if (!gapi.client.getToken()) tokenClient.requestAccessToken({ prompt: '' });
-
-	  /* ---- בחר / צור מסמך ---- */
-	  let docId = parseDocId(prompt('Docs URL/ID (blank = create new)') || '');
+		
+		picker.showModal();
+		  const ok = await new Promise(res => {
+			picker.addEventListener('close', () => res(picker.returnValue === 'default'), { once:true });
+		  });
+		  if (!ok) return;                     // user cancelled
+		  let docId = parseDocId(input.value);
+	  
 	  if (!docId) {
 		const res = await gapi.client.drive.files.create({
 		  resource: {
