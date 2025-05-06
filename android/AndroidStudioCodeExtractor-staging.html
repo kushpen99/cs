@@ -392,7 +392,113 @@ async function sendBatch(docId, queue) {
   }
 }
 
-	
+
+/* helper – ID from URL */
+const parseDocId = s => (s || '').trim().match(/[-\w]{25,}/)?.[0] || null;
+
+/* helper – last legal index (end‑1) */
+async function getInsertIndex(docId) {
+  const end = (await gapi.client.docs.documents.get({ documentId: docId }))
+                .result.body.content.at(-1).endIndex;
+  return Math.max(1, end - 1);
+}
+
+/* helper – ≤100 requests per call */
+async function flushQueue(docId, q) {
+  while (q.length) {
+    const chunk = q.splice(0, 100);
+    await gapi.client.docs.documents.batchUpdate({
+      documentId: docId,
+      resource: { requests: chunk },
+    });
+  }
+}
+
+async function appendFilesToGoogleDoc() {
+  /* 1. gather files & normalise newlines */
+  const entries = updateFileList();
+  if (!entries.length) return alert('No files chosen');
+
+  const fileBlobs = await Promise.all(
+    entries.map(async ({ path, file }) => ({
+      name: path,
+      code: (await file.text()).replace(/\r\n/g, '\n'),   // Windows → Unix
+    }))
+  );
+
+  /* 2. doc ID / create new */
+  const raw  = prompt('Docs URL/ID (blank = new)');
+  if (raw === null) return;               // user cancelled
+  let docId  = parseDocId(raw);
+
+  /* 3. token */
+  if (!gapi.client.getToken()) {
+    await new Promise(res => { tokenClient.callback = res;
+                               tokenClient.requestAccessToken({ prompt: '' }); });
+  }
+
+  /* 4. create doc if needed */
+  if (!docId) {
+    docId = (await gapi.client.drive.files.create({
+      resource: {
+        mimeType: 'application/vnd.google-apps.document',
+        name: 'Android Studio Code Dump',
+      },
+      fields: 'id',
+    })).result.id;
+  }
+
+  /* 5. build & send */
+  let idx = await getInsertIndex(docId);
+  const queue = [];
+  const CHUNK = 20000;
+  const ROOM  = 90;
+
+  for (const { name, code } of fileBlobs) {
+    /* 5a. heading H2 */
+    queue.push({ insertText: { location: { index: idx }, text: name + '\n' } });
+    queue.push({
+      updateParagraphStyle: {
+        range: { startIndex: idx, endIndex: idx + name.length },
+        paragraphStyle: { namedStyleType: 'HEADING_2' },
+        fields: 'namedStyleType',
+      },
+    });
+    idx += name.length + 1;
+
+    /* 5b. blank line before code */
+    queue.push({ insertText: { location: { index: idx }, text: '\n' } });
+    idx += 1;
+
+    /* 5c. code in 20 K slices */
+    for (let p = 0; p < code.length; p += CHUNK) {
+      const slice = code.slice(p, p + CHUNK);
+      queue.push({ insertText: { location: { index: idx }, text: slice } });
+      idx += slice.length;
+
+      if (queue.length >= ROOM) {
+        await flushQueue(docId, queue);
+        idx = await getInsertIndex(docId);
+      }
+    }
+
+    /* 5d. blank line after code */
+    queue.push({ insertText: { location: { index: idx }, text: '\n' } });
+    idx += 1;
+
+    if (queue.length >= ROOM) {
+      await flushQueue(docId, queue);
+      idx = await getInsertIndex(docId);
+    }
+  }
+
+  if (queue.length) await flushQueue(docId, queue);
+
+  /* 6. open doc */
+  window.open(`https://docs.google.com/document/d/${docId}/edit`, '_blank');
+  alert('Files appended!');
+}
+
 	
 	/* --- main: append textarea content --- */
 	async function appendToGoogleDoc() {
