@@ -397,120 +397,100 @@ async function sendBatch(docId, queue) {
 }
 
 /* =====  הפונקציה הראשית  ===== */
-async function appendFilesToGoogleDoc() {
-  /* 1. אסוף קבצים מה‑UI  */
-  const entries = updateFileList();                // פונקציית הסינון שלך
-  if (!entries.length) {
-    alert('No files to append – load a project first.');
-    return;
-  }
-  const fileBlobs = await Promise.all(
-    entries.map(async ({ path, file }) => ({
-      name: path,
-      code: await file.text(),
-    }))
-  );
+/* helper – ID from URL */
+const parseDocId = (s) => (s || '').trim().match(/[-\w]{25,}/)?.[0] || null;
 
-  /* 2. בקשת Docs URL/ID לפני ה‑OAuth (כדי להימנע מחסימת prompt) */
-  const raw = prompt('Google Docs URL or ID (blank = create new):');
-  if (raw === null) return;                        // user cancelled
+/* helper – last legal index (end‑1) */
+async function getInsertIndex(docId) {
+  const end = (await gapi.client.docs.documents.get({ documentId: docId }))
+                .result.body.content.at(-1).endIndex;
+  return Math.max(1, end - 1);      // endIndex‑1, never sentinel
+}
+
+/* helper – ≤100 requests per call */
+async function flushQueue(docId, q) {
+  while (q.length) {
+    const chunk = q.splice(0, 100);
+    await gapi.client.docs.documents.batchUpdate({ documentId: docId,
+                                                   resource: { requests: chunk } });
+  }
+}
+
+async function appendFilesToGoogleDoc() {
+  /* 1. gather files & normalise newlines */
+  const entries = updateFileList();
+  if (!entries.length) return alert('No files chosen');
+
+  const fileBlobs = await Promise.all(entries.map(async ({ path, file }) => ({
+    name: path,
+    code: (await file.text()).replace(/\r\n/g, '\n')   // <-- normalize
+  })));
+
+  /* 2. doc ID / create new */
+  const raw = prompt('Docs URL/ID (blank = new)');
+  if (raw === null) return;
   let docId = parseDocId(raw);
 
-  /* 3. ודא שיש טוקן – עטוף בהבטחה כדי להמתין */
+  /* 3. token */
   if (!gapi.client.getToken()) {
-    await new Promise((resolve) => {
-      tokenClient.callback = () => resolve();      // ייפטר אחרי גישה
-      tokenClient.requestAccessToken({ prompt: '' });
-    });
+    await new Promise(res => { tokenClient.callback = res;
+                               tokenClient.requestAccessToken({ prompt: '' }); });
   }
 
-  /* 4. צור מסמך חדש אם לא ניתן ID */
+  /* 4. create doc if needed */
   if (!docId) {
-    const res = await gapi.client.drive.files.create({
-      resource: {
-        mimeType: 'application/vnd.google-apps.document',
-        name: 'Android Studio Code Dump',
-      },
-      fields: 'id',
-    });
-    docId = res.result.id;
+    docId = (await gapi.client.drive.files.create({
+      resource: { mimeType: 'application/vnd.google-apps.document',
+                  name: 'Android Studio Code Dump' },
+      fields: 'id'
+    })).result.id;
   }
 
-  /* 5. בנייה ושליחה במנות */
-  let endIndex = await getEndIndex(docId);
-  const requests = [];
-  const CHUNK = 50000;                 // ≤50 K UTF‑16 chars
-  const ROOM  = 95;                    // שולח קצת לפני 100 כדי להשאיר מקום
+  /* 5. build & send */
+  let idx = await getInsertIndex(docId);
+  const queue = [];
+  const CHUNK = 20000;         // safe margin
+  const ROOM  = 90;            // flush before 100
 
   for (const { name, code } of fileBlobs) {
-    /* 5a. כותרת H2 */
-    requests.push({
-      insertText: { location: { index: endIndex }, text: name + '\n' },
-    });
-    requests.push({
-      updateParagraphStyle: {
-        range: { startIndex: endIndex, endIndex: endIndex + name.length },
-        paragraphStyle: { namedStyleType: 'HEADING_2' },
-        fields: 'namedStyleType',
-      },
-    });
-    endIndex += name.length + 1;
+    /* H2 */
+    queue.push({ insertText: { location: { index: idx }, text: name + '\n' } });
+    queue.push({ updateParagraphStyle: { range: { startIndex: idx,
+                                                  endIndex: idx + name.length },
+                                         paragraphStyle: { namedStyleType: 'HEADING_2' },
+                                         fields: 'namedStyleType' } });
+    idx += name.length + 1;
 
-    /* 5b. פתיחת גדר code */
-    requests.push({
-      insertText: { location: { index: endIndex }, text: '```java\n' },
-    });
-    endIndex += 8; // "```java\n"
+    /* opening fence */
+    queue.push({ insertText: { location: { index: idx }, text: '```java\n' } });
+    idx += 8;
 
-    /* 5c. תוכן הקובץ ב‑Chunks של ≤50K */
-    for (let i = 0; i < code.length; i += CHUNK) {
-      const slice = code.slice(i, i + CHUNK);
-      requests.push({
-        insertText: { location: { index: endIndex }, text: slice },
-      });
-      endIndex += slice.length;
+    /* code in 20 K slices */
+    for (let p = 0; p < code.length; p += CHUNK) {
+      const slice = code.slice(p, p + CHUNK);
+      queue.push({ insertText: { location: { index: idx }, text: slice } });
+      idx += slice.length;
 
-      /* אם קרובים למגבלת 100 – שלח וחישוב endIndex מחדש */
-      if (requests.length >= ROOM) {
-        try {
-			console.log("calling batch 1");
-		  await sendBatch(docId, requests);
-		} catch (e) {
-		  console.error('Docs API error:', e.result.error.message);
-		  throw e;                        // מעביר הלאה אם תרצה לעצור
-		}
-        endIndex = await getEndIndex(docId);
+      if (queue.length >= ROOM) {
+        await flushQueue(docId, queue);
+        idx = await getInsertIndex(docId);
       }
     }
 
-    /* 5d. סגירת הגדר + שורה ריקה */
-    requests.push({
-      insertText: { location: { index: endIndex }, text: '\n```\n' },
-    });
-    endIndex += 4;
+    /* closing fence */
+    queue.push({ insertText: { location: { index: idx }, text: '\n```\n' } });
+    idx += 5;                         // '\n```\n'  => 5 chars
 
-    if (requests.length >= ROOM) {
-      try {
-			console.log("calling batch 2");
-
-		  await sendBatch(docId, requests);
-		} catch (e) {
-		  console.error('Docs API error:', e.result.error.message);
-		  throw e;                        // מעביר הלאה אם תרצה לעצור
-		}
-      endIndex = await getEndIndex(docId);
+    if (queue.length >= ROOM) {
+      await flushQueue(docId, queue);
+      idx = await getInsertIndex(docId);
     }
   }
 
-  /* 6. שלח את השאריות */
-  if (requests.length) {
-	console.log("calling batch 3");
-	await sendBatch(docId, requests);
-  }
+  if (queue.length) await flushQueue(docId, queue);
 
-  /* 7. פתח את המסמך בכרטיסייה חדשה */
   window.open(`https://docs.google.com/document/d/${docId}/edit`, '_blank');
-  alert('Files appended!');
+  alert('Files appended successfully!');
 }
 
 
