@@ -350,11 +350,6 @@
 	  gisLoaded();
 	});
 
-	/* --- tiny helper: extract docId if user pastes full URL --- */
-	function parseDocId(input) {
-	  const m = input.trim().match(/[-\w]{25,}/);
-	  return m ? m[0] : null;
-	}
 	
 	/* מחזיר Promise למערך [{ name, code }] */
 	async function collectFilesForAppend() {
@@ -374,76 +369,133 @@
 
 	  return files;
 	}
+	
+	/* helper – תמציתי: חילוץ מזהה מתוך URL או ID גולמי */
+function parseDocId(input) {
+  const m = (input || '').trim().match(/[-\w]{25,}/);
+  return m ? m[0] : null;
+}
 
-	async function appendFilesToGoogleDoc() {
-	  const fileBlobs = await collectFilesForAppend();
-	  if (!fileBlobs) return;                      // אין קבצים
+/* helper – מביא את endIndex הנוכחי של המסמך */
+async function getEndIndex(docId) {
+  const doc = await gapi.client.docs.documents.get({ documentId: docId });
+  return doc.result.body.content.at(-1)?.endIndex || 1;
+}
 
-	  /* ---- OAuth token ---- */
-	  if (!gapi.client.getToken()) tokenClient.requestAccessToken({ prompt: '' });
-		
-		picker.showModal();
-		  const ok = await new Promise(res => {
-			picker.addEventListener('close', () => res(picker.returnValue === 'default'), { once:true });
-		  });
-		  if (!ok) return;                     // user cancelled
-		  let docId = parseDocId(input.value);
-	  
-	  if (!docId) {
-		const res = await gapi.client.drive.files.create({
-		  resource: {
-			mimeType: 'application/vnd.google-apps.document',
-			name: 'Android Studio Code Dump',
-		  },
-		  fields: 'id',
-		});
-		docId = res.result.id;
-	  }
+/* helper – שולח בקשות בחבילות של ≤100 */
+async function sendBatch(docId, queue) {
+  while (queue.length) {
+    const chunk = queue.splice(0, 100);
+    await gapi.client.docs.documents.batchUpdate({
+      documentId: docId,
+      resource: { requests: chunk },
+    });
+  }
+}
 
-	  /* ---- הבא את endIndex הנוכחי ---- */
-	  const doc = await gapi.client.docs.documents.get({ documentId: docId });
-	  let endIndex = doc.result.body.content.at(-1)?.endIndex || 1;
+/* =====  הפונקציה הראשית  ===== */
+async function appendFilesToGoogleDoc() {
+  /* 1. אסוף קבצים מה‑UI  */
+  const entries = updateFileList();                // פונקציית הסינון שלך
+  if (!entries.length) {
+    alert('No files to append – load a project first.');
+    return;
+  }
+  const fileBlobs = await Promise.all(
+    entries.map(async ({ path, file }) => ({
+      name: path,
+      code: await file.text(),
+    }))
+  );
 
-	  const requests = [];
+  /* 2. בקשת Docs URL/ID לפני ה‑OAuth (כדי להימנע מחסימת prompt) */
+  const raw = prompt('Google Docs URL or ID (blank = create new):');
+  if (raw === null) return;                        // user cancelled
+  let docId = parseDocId(raw);
 
-	  fileBlobs.forEach(({ name, code }) => {
-		/* כותרת H2 */
-		requests.push({
-		  insertText: {
-			location: { index: endIndex },
-			text: name + '\n',
-		  },
-		});
-		requests.push({
-		  updateParagraphStyle: {
-			range: { startIndex: endIndex, endIndex: endIndex + name.length },
-			paragraphStyle: { namedStyleType: 'HEADING_2' },
-			fields: 'namedStyleType',
-		  },
-		});
-		endIndex += name.length + 1;
+  /* 3. ודא שיש טוקן – עטוף בהבטחה כדי להמתין */
+  if (!gapi.client.getToken()) {
+    await new Promise((resolve) => {
+      tokenClient.callback = () => resolve();      // ייפטר אחרי גישה
+      tokenClient.requestAccessToken({ prompt: '' });
+    });
+  }
 
-		/* בלוק‑קוד */
-		const block = '```java\n' + code + '\n```\n';
-		requests.push({
-		  insertText: {
-			location: { index: endIndex },
-			text: block,
-		  },
-		});
-		endIndex += block.length;
-	  });
+  /* 4. צור מסמך חדש אם לא ניתן ID */
+  if (!docId) {
+    const res = await gapi.client.drive.files.create({
+      resource: {
+        mimeType: 'application/vnd.google-apps.document',
+        name: 'Android Studio Code Dump',
+      },
+      fields: 'id',
+    });
+    docId = res.result.id;
+  }
 
-	  /* ---- שלח ל‑Docs ---- */
-	  await gapi.client.docs.documents.batchUpdate({
-		documentId: docId,
-		resource: { requests },
-	  });
+  /* 5. בנייה ושליחה במנות */
+  let endIndex = await getEndIndex(docId);
+  const requests = [];
+  const CHUNK = 50000;                 // ≤50 K UTF‑16 chars
+  const ROOM  = 95;                    // שולח קצת לפני 100 כדי להשאיר מקום
 
-	  window.open(`https://docs.google.com/document/d/${docId}/edit`, '_blank');
-	  alert('Files appended!');
-	}
+  for (const { name, code } of fileBlobs) {
+    /* 5a. כותרת H2 */
+    requests.push({
+      insertText: { location: { index: endIndex }, text: name + '\n' },
+    });
+    requests.push({
+      updateParagraphStyle: {
+        range: { startIndex: endIndex, endIndex: endIndex + name.length },
+        paragraphStyle: { namedStyleType: 'HEADING_2' },
+        fields: 'namedStyleType',
+      },
+    });
+    endIndex += name.length + 1;
 
+    /* 5b. פתיחת גדר code */
+    requests.push({
+      insertText: { location: { index: endIndex }, text: '```java\n' },
+    });
+    endIndex += 8; // "```java\n"
+
+    /* 5c. תוכן הקובץ ב‑Chunks של ≤50K */
+    for (let i = 0; i < code.length; i += CHUNK) {
+      const slice = code.slice(i, i + CHUNK);
+      requests.push({
+        insertText: { location: { index: endIndex }, text: slice },
+      });
+      endIndex += slice.length;
+
+      /* אם קרובים למגבלת 100 – שלח וחישוב endIndex מחדש */
+      if (requests.length >= ROOM) {
+        await sendBatch(docId, requests);
+        endIndex = await getEndIndex(docId);
+      }
+    }
+
+    /* 5d. סגירת הגדר + שורה ריקה */
+    requests.push({
+      insertText: { location: { index: endIndex }, text: '\n```\n' },
+    });
+    endIndex += 4;
+
+    if (requests.length >= ROOM) {
+      await sendBatch(docId, requests);
+      endIndex = await getEndIndex(docId);
+    }
+  }
+
+  /* 6. שלח את השאריות */
+  if (requests.length) await sendBatch(docId, requests);
+
+  /* 7. פתח את המסמך בכרטיסייה חדשה */
+  window.open(`https://docs.google.com/document/d/${docId}/edit`, '_blank');
+  alert('Files appended!');
+}
+
+
+	
 	
 	/* --- main: append textarea content --- */
 	async function appendToGoogleDoc() {
