@@ -415,90 +415,105 @@ async function flushQueue(docId, q) {
 }
 
 async function appendFilesToGoogleDoc() {
-  /* 1. gather files & normalise newlines */
   const entries = updateFileList();
   if (!entries.length) return alert('No files chosen');
 
-  const fileBlobs = await Promise.all(
+  const files = await Promise.all(
     entries.map(async ({ path, file }) => ({
       name: path,
-      code: (await file.text()).replace(/\r\n/g, '\n'),   // Windows → Unix
+      code: (await file.text()).replace(/\r\n/g, '\n'),  // normalize
     }))
   );
 
-  /* 2. doc ID / create new */
-  const raw  = prompt('Docs URL/ID (blank = new)');
-  if (raw === null) return;               // user cancelled
-  let docId  = parseDocId(raw);
+  /* Ask for Doc URL/ID first */
+  const raw = prompt('Docs URL or ID (blank = create new):');
+  if (raw === null) return;
+  let docId = (raw.trim() && raw.match(/[-\w]{25,}/))?.[0] || null;
 
-  /* 3. token */
+  /* OAuth token */
   if (!gapi.client.getToken()) {
-    await new Promise(res => { tokenClient.callback = res;
-                               tokenClient.requestAccessToken({ prompt: '' }); });
+    await new Promise(r => { tokenClient.callback = r;
+                             tokenClient.requestAccessToken({prompt:''}); });
   }
 
-  /* 4. create doc if needed */
+  /* Create Doc if needed */
   if (!docId) {
-    docId = (await gapi.client.drive.files.create({
-      resource: {
-        mimeType: 'application/vnd.google-apps.document',
-        name: 'Android Studio Code Dump',
-      },
-      fields: 'id',
-    })).result.id;
+    const res = await gapi.client.drive.files.create({
+      resource:{mimeType:'application/vnd.google-apps.document',
+                name:'Android Studio Code Dump'},
+      fields:'id'
+    });
+    docId = res.result.id;
   }
 
-  /* 5. build & send */
-  let idx = await getInsertIndex(docId);
-  const queue = [];
-  const CHUNK = 20000;
-  const ROOM  = 90;
+  /* Helpers */
+  const getEnd = async () =>
+    (await gapi.client.docs.documents.get({documentId:docId}))
+      .result.body.content.slice(-1)[0].endIndex - 1;   // safe index
+  const send  = async qs => {
+    while (qs.length) {
+      await gapi.client.docs.documents.batchUpdate({
+        documentId:docId,
+        resource:{requests:qs.splice(0,100)}
+      });
+    }
+  };
 
-  for (const { name, code } of fileBlobs) {
-    /* 5a. heading H2 */
-    queue.push({ insertText: { location: { index: idx }, text: name + '\n' } });
-    queue.push({
-      updateParagraphStyle: {
-        range: { startIndex: idx, endIndex: idx + name.length },
-        paragraphStyle: { namedStyleType: 'HEADING_2' },
-        fields: 'namedStyleType',
-      },
-    });
+  let idx = await getEnd();
+  const CHUNK = 20000, ROOM = 90;
+  const q = [];
+
+  for (const {name, code} of files) {
+    /* heading H2 */
+    q.push({insertText:{location:{index:idx}, text:name+'\n'}});
+    q.push({updateParagraphStyle:{
+        range:{startIndex:idx, endIndex:idx+name.length},
+        paragraphStyle:{namedStyleType:'HEADING_2'},
+        fields:'namedStyleType'}});
     idx += name.length + 1;
 
-    /* 5b. blank line before code */
-    queue.push({ insertText: { location: { index: idx }, text: '\n' } });
-    idx += 1;
+    /* blank line before block */
+    q.push({insertText:{location:{index:idx}, text:'\n'}});
+    idx++;
 
-    /* 5c. code in 20 K slices */
-    for (let p = 0; p < code.length; p += CHUNK) {
-      const slice = code.slice(p, p + CHUNK);
-      queue.push({ insertText: { location: { index: idx }, text: slice } });
+    const startCode = idx;               // remember range start
+
+    /* code text in ≤20 k chunks */
+    for (let p=0; p<code.length; p+=CHUNK) {
+      const slice = code.slice(p,p+CHUNK);
+      q.push({insertText:{location:{index:idx}, text:slice}});
       idx += slice.length;
-
-      if (queue.length >= ROOM) {
-        await flushQueue(docId, queue);
-        idx = await getInsertIndex(docId);
-      }
+      if (q.length >= ROOM) { await send(q); idx = await getEnd(); }
     }
 
-    /* 5d. blank line after code */
-    queue.push({ insertText: { location: { index: idx }, text: '\n' } });
-    idx += 1;
+    const endCode = idx;                 // range end
 
-    if (queue.length >= ROOM) {
-      await flushQueue(docId, queue);
-      idx = await getInsertIndex(docId);
-    }
+    /* styling for the whole code range */
+    q.push({updateTextStyle:{
+        range:{startIndex:startCode, endIndex:endCode},
+        textStyle:{weightedFontFamily:{fontFamily:'Courier New'}},
+        fields:'weightedFontFamily'}});
+    q.push({updateParagraphStyle:{
+        range:{startIndex:startCode, endIndex:endCode},
+        paragraphStyle:{
+          backgroundColor:{color:{rgbColor:{red:0.96,green:0.96,blue:0.96}}},
+          borderLeft:{width:{magnitude:1,unit:'PT'},
+                      color:{rgbColor:{red:0.8,green:0.8,blue:0.8}}},
+        },
+        fields:'backgroundColor,borderLeft'}});
+    if (q.length >= ROOM) { await send(q); idx = await getEnd(); }
+
+    /* blank line after block */
+    q.push({insertText:{location:{index:idx}, text:'\n'}});
+    idx++;
+    if (q.length >= ROOM) { await send(q); idx = await getEnd(); }
   }
 
-  if (queue.length) await flushQueue(docId, queue);
+  if (q.length) await send(q);
 
-  /* 6. open doc */
   window.open(`https://docs.google.com/document/d/${docId}/edit`, '_blank');
-  alert('Files appended!');
+  alert('Files appended with code‑block styling!');
 }
-
 
 	
 	
