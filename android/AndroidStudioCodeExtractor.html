@@ -3,12 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Android Studio Code Extractor</title>
+  <title>Project Markdown Generator</title>
   <style>
     body { font-family: Arial, sans-serif; padding: 1em; max-width: 800px; margin: auto; }
     h1 { text-align: center; }
-    #drop-zone { border: 2px dashed #ccc; padding: 2em; text-align: center; color: #666; cursor: pointer; }
-    #drop-zone.dragover { background: #f0f0f0; }
+    .controls { display: flex; gap: 1em; margin-bottom: 1em; }
+    #drop-zone, #file-button { flex: 1; padding: 1em; border: 2px dashed #ccc; text-align: center; cursor: pointer; }
+    #drop-zone.dragover, #file-button.dragover { background: #f0f0f0; }
     #file-list { max-height: 200px; overflow-y: auto; margin: 0.5em 0; padding-left: 1em; font-family: monospace; background: #f1f1f1; border: 1px solid #ccc; }
     #preview { margin-top: 1em; }
     #preview h2 { border-bottom: 1px solid #ccc; margin-top: 1em; font-size: 1.1em; }
@@ -16,12 +17,17 @@
     textarea { width: 100%; height: 60vh; margin-top: 1em; font-family: monospace; }
     button { padding: 0.5em 1em; font-size: 1em; margin-top: 0.5em; }
     label { display: block; margin-top: 0.5em; }
+    input[type="file"] { display: none; }
   </style>
 </head>
 <body>
   <h1>Project Markdown Generator</h1>
-  <div id="drop-zone">Drag & drop folders here or click to select</div>
-  <input type="file" id="file-input" webkitdirectory directory multiple accept=".java,.xml" style="display:none" />
+  <div class="controls">
+    <div id="drop-zone">Click or drag & drop folders to select</div>
+    <div id="file-button">Click to select individual files</div>
+  </div>
+  <input type="file" id="folder-input" webkitdirectory directory multiple accept=".java,.xml" />
+  <input type="file" id="file-input" multiple accept=".java,.xml" />
   <label><input type="checkbox" id="include-subdirs" checked /> Include subdirectories</label>
   <p>Supported files to process (*.java, *.xml):</p>
   <ul id="file-list"></ul>
@@ -34,26 +40,35 @@
     let allFiles = [];
 
     const dropZone = document.getElementById('drop-zone');
+    const fileButton = document.getElementById('file-button');
+    const folderInput = document.getElementById('folder-input');
     const fileInput = document.getElementById('file-input');
     const includeSubdirsCheckbox = document.getElementById('include-subdirs');
     const fileListEl = document.getElementById('file-list');
     const outputEl = document.getElementById('output');
     const previewEl = document.getElementById('preview');
 
-    dropZone.addEventListener('click', () => fileInput.click());
+    // Folder picker
+    dropZone.addEventListener('click', () => folderInput.click());
     dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
-    dropZone.addEventListener('dragleave', e => { dropZone.classList.remove('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
     dropZone.addEventListener('drop', e => {
-      e.preventDefault();
-      dropZone.classList.remove('dragover');
-      const files = Array.from(e.dataTransfer.files);
-      allFiles = files;
+      e.preventDefault(); dropZone.classList.remove('dragover');
+      allFiles = Array.from(e.dataTransfer.files);
       updateFileList();
     });
-    fileInput.addEventListener('change', e => {
-      allFiles = Array.from(fileInput.files);
+    folderInput.addEventListener('change', () => {
+      allFiles = Array.from(folderInput.files);
       updateFileList();
     });
+
+    // File picker
+    fileButton.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+      allFiles = allFiles.concat(Array.from(fileInput.files));
+      updateFileList();
+    });
+
     includeSubdirsCheckbox.addEventListener('change', updateFileList);
 
     function updateFileList() {
@@ -67,38 +82,25 @@
         return true;
       }).map(f => ({ file: f, path: f.webkitRelativePath || f.name }));
 
-      // Deduplicate & sort
       const map = new Map();
       entries.forEach(e => map.set(e.path, e.file));
       const unique = Array.from(map.entries()).map(([path, file]) => ({ path, file }));
       unique.sort((a, b) => a.path.localeCompare(b.path));
 
-      // Display
       fileListEl.innerHTML = '';
       unique.forEach(e => {
-        const li = document.createElement('li');
-        li.textContent = e.path;
+        const li = document.createElement('li'); li.textContent = e.path;
         fileListEl.appendChild(li);
       });
-
       return unique;
     }
 
-    function extToLang(ext) {
-      const map = { '.java':'java', '.xml':'xml' };
-      return map[ext.toLowerCase()] || '';
-    }
+    function extToLang(ext) { return { '.java':'java', '.xml':'xml' }[ext] || ''; }
 
     function makeSeparator(path, isXml) {
-      if (isXml) {
-        return `<!-- ─────────────────────────────────────────── -->\n` +
-               `<!-- File: ${path} -->\n` +
-               `<!-- ─────────────────────────────────────────── -->\n`;
-      } else {
-        return `// ─────────────────────────────────────────── \n` +
-               `// File: ${path}\n` +
-               `// ─────────────────────────────────────────── \n`;
-      }
+      return isXml
+        ? `<!-- ─────────────────────────────────────────── -->\n<!-- File: ${path} -->\n<!-- ─────────────────────────────────────────── -->\n`
+        : `// ─────────────────────────────────────────── \n// File: ${path}\n// ─────────────────────────────────────────── \n`;
     }
 
     document.getElementById('generate').addEventListener('click', () => {
@@ -118,7 +120,7 @@
           const ext = file.path.slice(file.path.lastIndexOf('.')).toLowerCase();
           const lang = extToLang(ext);
           md += `## ${file.path}\n`;
-          md += lang ? `\`\`\`${lang}\n` : '```\n';
+          md += lang ? `\\`\\`\\`${lang}\n` : '```\n';
           md += sep + file.content.replace(/```/g, '\`\`\`') + '\n';
           md += '```\n\n';
         });
@@ -131,17 +133,12 @@
           const section = document.createElement('div');
           const h2 = document.createElement('h2'); h2.textContent = file.path;
           const pre = document.createElement('pre');
-          const codeEl = document.createElement('code');
-          codeEl.textContent = sep + file.content;
+          const codeEl = document.createElement('code'); codeEl.textContent = sep + file.content;
           pre.appendChild(codeEl);
-          section.appendChild(h2);
-          section.appendChild(pre);
+          section.appendChild(h2); section.appendChild(pre);
           previewEl.appendChild(section);
         });
-      }).catch(err => {
-        console.error('Error:', err);
-        alert('An error occurred. Check console.');
-      });
+      }).catch(err => { console.error('Error:', err); alert('An error occurred. Check console.'); });
     });
   </script>
 </body>
