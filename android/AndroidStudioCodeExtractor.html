@@ -3,8 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Android Studio Code Extractor</title>
+  <title>Android Studio Code Extractor</title>
 
+	<!-- Google API client -->
+	<script src="https://apis.google.com/js/api.js"></script>
+
+	<!-- Google Identity Services (OAuth2) -->
+	<script src="https://accounts.google.com/gsi/client" async defer></script>
 
   <!--  Google Fonts  -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -226,6 +231,24 @@
 			<span class="material-icons">content_copy</span>
 			<span>Copy code</span>
 		</button>
+		<button id="btn-append-doc" type="button" disabled>
+		  <span class="material-icons">description</span>
+		  <span>Append to Google Doc</span>
+		</button>
+		
+		<!-- 1. minimal modal -->
+		<dialog id="doc-picker">
+		  <form method="dialog" id="doc-form">
+			<label>Docs URL or ID:<br>
+			  <input type="text" id="doc-input" style="width:100%" />
+			</label>
+			<menu>
+			  <button value="cancel">Cancel</button>
+			  <button id="doc-ok" value="default">OK</button>
+			</menu>
+		  </form>
+		</dialog>
+
 	</div>
 	<textarea
 	  id="output"
@@ -247,11 +270,14 @@
     const btnSelectFiles = document.getElementById("btn-select-files");
     const btnClear = document.getElementById("btn-clear");
     const btnCopy = document.getElementById("btn-copy");
+	const btnAppendDoc = document.getElementById("btn-append-doc");
 
     const includeSubdirsCheckbox = document.getElementById("include-subdirs");
     const fileListEl = document.getElementById("file-list");
     const outputEl = document.getElementById("output");
     const previewEl = document.getElementById("preview");
+	const picker = document.getElementById('doc-picker');
+	const input  = document.getElementById('doc-input');
 
     /*  ── file picking ──  */
     btnSelectFolder.addEventListener("click", () => folderInput.click());
@@ -270,6 +296,248 @@
     });
 
     includeSubdirsCheckbox.addEventListener("change", updateFileList);
+	
+	document.getElementById('btn-append-doc')
+        .addEventListener('click', appendFilesToGoogleDoc);
+
+	
+	/* ‑‑‑ keys from Google Cloud console ‑‑‑ */
+	const CLIENT_ID = '828705375882-o7ojpl7jh5qtq8hseqitpmv0u2626q9k.apps.googleusercontent.com';
+	const API_KEY   = 'AIzaSyC_j3jhtG8unLvnf3OjG_i1WWxRa6eCYEU';
+
+	/* Docs & Drive scopes */
+	const SCOPES = [
+	  'https://www.googleapis.com/auth/documents',   // write existing docs
+	  'https://www.googleapis.com/auth/drive.file'   // create files you own
+	].join(' ');
+
+	let tokenClient, gapiInited = false, gisInited = false;
+
+	/* -------- gapi loader -------- */
+	function gapiLoaded() {
+	  gapi.load('client', async () => {
+		await gapi.client.init({
+		  apiKey: API_KEY,
+		  discoveryDocs: ['https://docs.googleapis.com/$discovery/rest?version=v1']
+		});
+		gapiInited = true;
+		maybeEnableAppend();
+	  });
+	}
+
+	/* -------- GIS loader -------- */
+	function gisLoaded() {
+	  tokenClient = google.accounts.oauth2.initTokenClient({
+		client_id: CLIENT_ID,
+		scope: SCOPES,
+		callback: (t) => {
+		  gapi.client.setToken(t);          // attach access token to gapi
+		  maybeEnableAppend();
+		}
+	  });
+	  gisInited = true;
+	}
+
+	function maybeEnableAppend() {
+	  if (gapiInited && gisInited) {
+		document.getElementById('btn-append-doc').disabled = false;
+	  }
+	}
+
+	/* Trigger on page load */
+	window.addEventListener('load', () => {
+	  gapiLoaded();
+	  gisLoaded();
+	});
+
+	
+	/* מחזיר Promise למערך [{ name, code }] */
+	async function collectFilesForAppend() {
+	  const entries = updateFileList();            // מהפונקציה שלך
+	  if (!entries.length) {
+		alert('No files to append – load a project first.');
+		return null;
+	  }
+
+	  /* File.text() מחזיר Promise עם הטקסט המלא של הקובץ */
+	  const files = await Promise.all(
+		entries.map(async ({ path, file }) => ({
+		  name: path,              // שם / נתיב הקובץ
+		  code: await file.text(), // תוכן הקובץ כטקסט
+		}))
+	  );
+
+	  return files;
+	}
+	
+
+
+/* helper – safe end‑of‑doc insertion point */
+async function getEndIndex(docId) {
+  const doc = await gapi.client.docs.documents.get({ documentId: docId });
+  const idx = doc.result.body.content.at(-1)?.endIndex || 1;
+  /* Google allows 1‑based indices up to len, not len+1 (sentinel) */
+  return Math.max(1, idx - 1);
+}
+
+
+/* helper – שולח בקשות בחבילות של ≤100 */
+async function sendBatch(docId, queue) {
+  while (queue.length) {
+    const chunk = queue.splice(0, 100);
+    await gapi.client.docs.documents.batchUpdate({
+      documentId: docId,
+      resource: { requests: chunk },
+    });
+  }
+}
+
+
+/* helper – ID from URL */
+const parseDocId = s => (s || '').trim().match(/[-\w]{25,}/)?.[0] || null;
+
+/* helper – last legal index (end‑1) */
+async function getInsertIndex(docId) {
+  const end = (await gapi.client.docs.documents.get({ documentId: docId }))
+                .result.body.content.at(-1).endIndex;
+  return Math.max(1, end - 1);
+}
+
+/* helper – ≤100 requests per call */
+async function flushQueue(docId, q) {
+  while (q.length) {
+    const chunk = q.splice(0, 100);
+    await gapi.client.docs.documents.batchUpdate({
+      documentId: docId,
+      resource: { requests: chunk },
+    });
+  }
+}
+
+async function appendFilesToGoogleDoc() {
+  /* 1. gather files & normalise newlines */
+  const entries = updateFileList();
+  if (!entries.length) return alert('No files chosen');
+
+  const fileBlobs = await Promise.all(
+    entries.map(async ({ path, file }) => ({
+      name: path,
+      code: (await file.text()).replace(/\r\n/g, '\n'),   // Windows → Unix
+    }))
+  );
+
+  /* 2. doc ID / create new */
+  const raw  = prompt('Docs URL/ID (blank = new)');
+  if (raw === null) return;               // user cancelled
+  let docId  = parseDocId(raw);
+
+  /* 3. token */
+  if (!gapi.client.getToken()) {
+    await new Promise(res => { tokenClient.callback = res;
+                               tokenClient.requestAccessToken({ prompt: '' }); });
+  }
+
+  /* 4. create doc if needed */
+  if (!docId) {
+	  const newDoc = await gapi.client.docs.documents.create({
+		title: 'Android Studio Code Dump'
+	  });
+	  docId = newDoc.result.documentId;
+	}
+
+  /* 5. build & send */
+  let idx = await getInsertIndex(docId);
+  const queue = [];
+  const CHUNK = 20000;
+  const ROOM  = 90;
+
+  for (const { name, code } of fileBlobs) {
+    /* 5a. heading H3 */
+    queue.push({ insertText: { location: { index: idx }, text: name + '\n' } });
+    queue.push({
+      updateParagraphStyle: {
+        range: { startIndex: idx, endIndex: idx + name.length },
+        paragraphStyle: { namedStyleType: 'HEADING_3' },
+        fields: 'namedStyleType',
+      },
+    });
+    idx += name.length + 1;
+
+    /* 5b. blank line before code */
+    queue.push({ insertText: { location: { index: idx }, text: '\n' } });
+    idx += 1;
+
+    /* 5c. code in 20 K slices */
+    for (let p = 0; p < code.length; p += CHUNK) {
+      const slice = code.slice(p, p + CHUNK);
+      queue.push({ insertText: { location: { index: idx }, text: slice } });
+      idx += slice.length;
+
+      if (queue.length >= ROOM) {
+        await flushQueue(docId, queue);
+        idx = await getInsertIndex(docId);
+      }
+    }
+
+    /* 5d. blank line after code */
+    queue.push({ insertText: { location: { index: idx }, text: '\n' } });
+    idx += 1;
+
+    if (queue.length >= ROOM) {
+      await flushQueue(docId, queue);
+      idx = await getInsertIndex(docId);
+    }
+  }
+
+  if (queue.length) await flushQueue(docId, queue);
+
+  /* 6. open doc */
+  window.open(`https://docs.google.com/document/d/${docId}/edit`, '_blank');
+  alert('Files appended!');
+}
+
+	
+	/* --- main: append textarea content --- */
+	async function appendToGoogleDoc() {
+	  const code = document.getElementById('output').value;
+	  if (!code.trim()) return alert('No code to append.');
+
+	  /* ask for / refresh token if needed */
+	  if (!gapi.client.getToken()) tokenClient.requestAccessToken();
+
+	  const docInput = prompt(
+		'Google Docs URL or ID.\nLeave blank to create a new document.'
+	  );
+
+	  let docId = parseDocId(docInput || '');
+	  if (!docId) {
+		/* create a fresh doc via Drive */
+		const res = await gapi.client.drive.files.create({
+		  resource: {mimeType: 'application/vnd.google-apps.document', name: 'Extracted Code'},
+		  fields: 'id'
+		});
+		docId = res.result.id;
+		alert('Created new Doc: ' + docId);
+	  }
+
+	  /* build batchUpdate body */
+	  const requests = [
+		{
+		  insertText: {
+			text: '\n```java\n' + code + '\n```\n',
+			endOfSegmentLocation: {}        // <- “append” magic
+		  }
+		}
+	  ];
+
+	  await gapi.client.docs.documents.batchUpdate({
+		documentId: docId,
+		resource: { requests }
+	  });
+
+	  window.open(`https://docs.google.com/document/d/${docId}/edit`, '_blank');
+	  alert('Code appended!');
+	}
 
     /*  ── list management ──  */
     function updateFileList() {
@@ -360,7 +628,7 @@
           });
           outputEl.value = md;
           btnCopy.style.display = "inline-flex"; //  show copy button
-
+		  
           /*  html preview  */
           previewEl.innerHTML = "";
           results.forEach((file) => {

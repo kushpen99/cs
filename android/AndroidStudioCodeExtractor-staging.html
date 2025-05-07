@@ -452,12 +452,12 @@ async function appendFilesToGoogleDoc() {
   const ROOM  = 90;
 
   for (const { name, code } of fileBlobs) {
-    /* 5a. heading H2 */
+    /* 5a. heading H3 */
     queue.push({ insertText: { location: { index: idx }, text: name + '\n' } });
     queue.push({
       updateParagraphStyle: {
         range: { startIndex: idx, endIndex: idx + name.length },
-        paragraphStyle: { namedStyleType: 'HEADING_2' },
+        paragraphStyle: { namedStyleType: 'HEADING_3' },
         fields: 'namedStyleType',
       },
     });
