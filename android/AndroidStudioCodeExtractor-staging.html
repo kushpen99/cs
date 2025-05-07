@@ -439,14 +439,11 @@ async function appendFilesToGoogleDoc() {
 
   /* 4. create doc if needed */
   if (!docId) {
-    docId = (await gapi.client.drive.files.create({
-      resource: {
-        mimeType: 'application/vnd.google-apps.document',
-        name: 'Android Studio Code Dump',
-      },
-      fields: 'id',
-    })).result.id;
-  }
+	  const newDoc = await gapi.client.docs.documents.create({
+		title: 'Android Studio Code Dump'
+	  });
+	  docId = newDoc.result.documentId;
+	}
 
   /* 5. build & send */
   let idx = await getInsertIndex(docId);
