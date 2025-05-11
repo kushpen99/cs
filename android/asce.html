@@ -169,11 +169,6 @@
       button { width: 100%; justify-content: center; }
       label { margin-top: 0.75rem; }
     }
-	
-	.footer-link:link { text-decoration: none; }
-	.footer-link:visited { text-decoration: none; }
-	.footer-link:hover { text-decoration: underline; }
-	.footer-link:active { text-decoration: underline; }
   </style>
 </head>
 
@@ -236,7 +231,7 @@
 			<span class="material-icons">content_copy</span>
 			<span>Copy code</span>
 		</button>
-		<button id="btn-append-doc" type="button" disabled>
+		<button id="btn-append-doc" type="button" disabled style="display:none">
 		  <span class="material-icons">description</span>
 		  <span>Append to Google Doc</span>
 		</button>
@@ -263,11 +258,7 @@
 
     <div id="preview"></div>
   </div>
-  <footer>
-	<a href="PrivacyPolicy.html" class="footer-link">Privacy Policy</a>
-  </footer>
-
-
+  
   <!--  ───────────  JavaScript (functionality unchanged)  ───────────  -->
   <script>
     console.log("code Generator initialized");
