@@ -53,6 +53,20 @@
       align-items: center;
       padding: 2rem 1rem 4rem;
     }
+	
+	header {
+		display: flex;
+	}
+	
+	header h1{
+		flex: 8;
+	}
+	
+	.header-logo {
+		flex: 1;
+		max-width: 90px;
+		aspect-ratio: auto;
+	}
 
     h1 {
       font-size: 1.9rem;
@@ -174,8 +188,11 @@
 
 <body>
   <div class="panel">
-    <h1><span class="material-icons">terminal</span>Android Studio Code Extractor</h1>
-
+    <header>
+		<img src="" class="header-logo" display="none">
+		<h1><span class="material-icons">terminal</span>Android Studio Code Extractor</h1>
+		<img src="images/klabs-logo1.png" class="header-logo">
+	</header>
     <div style="margin-bottom: 1rem">
       <button id="btn-select-folder" type="button">
         <span class="material-icons">folder_open</span>
